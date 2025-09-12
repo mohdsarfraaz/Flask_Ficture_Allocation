@@ -2,35 +2,111 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Results - Ficture Allocation</title>
+    <title>Ficture Allocation Results</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <style>
+        select.filter-select {
+            width: auto;
+            display: inline-block;
+            margin-right: 1rem;
+        }
+    </style>
 </head>
 <body class="container py-4">
+
     <h2>✅ Allocation Completed</h2>
-    <a href="/" class="btn btn-secondary mb-3">⬅️ Back to Home</a>
+    <a href="/" class="btn btn-secondary mb-3">⬅️ Back</a>
 
-    <h4>📁 File: {{ filename }}</h4>
+    <p>📁 <strong>File:</strong> {{ filename }}</p>
+    <a href="{{ url_for('static', filename='results/' + result_filename) }}" class="btn btn-success mb-3" download>⬇️ Download Processed CSV</a>
 
-    <div class="table-responsive mb-4">
-        {{ table | safe }}
+    <hr>
+    <h4>🔍 Filter Data</h4>
+    <form id="filter-form" class="mb-4">
+        <label>Store:</label>
+        <select id="storeFilter" class="form-select d-inline-block filter-select">
+            <option value="">All</option>
+        </select>
+        <label>Department:</label>
+        <select id="departmentFilter" class="form-select d-inline-block filter-select">
+            <option value="">All</option>
+        </select>
+        <label>UDF:</label>
+        <select id="udfFilter" class="form-select d-inline-block filter-select">
+            <option value="">All</option>
+        </select>
+    </form>
+
+    <div class="table-responsive">
+        <table id="dataTable" class="table table-bordered table-striped">
+            {{ table | safe }}
+        </table>
     </div>
 
+    <hr>
+    <h4>📈 Allocation Overview</h4>
     <div id="plot" class="mb-5"></div>
 
     <script>
-        // Placeholder chart: you can dynamically generate this later with Flask + JSON endpoint
-        var trace1 = {
-            x: ['Pass 0', 'Pass 1', 'Pass 2'],
-            y: [100, 80, 60],
+        // Dynamically populate filters from the table
+        const table = document.querySelector('#dataTable');
+        const storeFilter = document.getElementById('storeFilter');
+        const departmentFilter = document.getElementById('departmentFilter');
+        const udfFilter = document.getElementById('udfFilter');
+
+        const getColumnData = (colIndex) => {
+            const data = new Set();
+            for (let row of table.rows) {
+                if (row.rowIndex === 0) continue;
+                data.add(row.cells[colIndex].textContent.trim());
+            }
+            return Array.from(data).sort();
+        };
+
+        function populateFilters() {
+            const headers = Array.from(table.rows[0].cells).map(cell => cell.textContent.trim());
+            const storeIndex = headers.indexOf("store") || headers.indexOf("Store") || 0;
+            const depIndex = headers.indexOf("department") || headers.indexOf("Department") || 1;
+            const udfIndex = headers.indexOf("udf") || headers.indexOf("UDF") || 2;
+
+            getColumnData(storeIndex).forEach(v => storeFilter.innerHTML += `<option>${v}</option>`);
+            getColumnData(depIndex).forEach(v => departmentFilter.innerHTML += `<option>${v}</option>`);
+            getColumnData(udfIndex).forEach(v => udfFilter.innerHTML += `<option>${v}</option>`);
+        }
+
+        function applyFilters() {
+            const sVal = storeFilter.value;
+            const dVal = departmentFilter.value;
+            const uVal = udfFilter.value;
+
+            for (let row of table.rows) {
+                if (row.rowIndex === 0) continue;
+                const s = row.cells[0].textContent.trim();
+                const d = row.cells[1].textContent.trim();
+                const u = row.cells[2].textContent.trim();
+                row.style.display = (
+                    (!sVal || s === sVal) &&
+                    (!dVal || d === dVal) &&
+                    (!uVal || u === uVal)
+                ) ? '' : 'none';
+            }
+        }
+
+        [storeFilter, departmentFilter, udfFilter].forEach(el => {
+            el.addEventListener('change', applyFilters);
+        });
+
+        populateFilters();
+
+        // Plotly example (placeholder)
+        const trace1 = {
+            x: ['Store A', 'Store B', 'Store C'],
+            y: [120, 80, 50],
             type: 'bar'
         };
-        var layout = {
-            title: 'Sample Allocation Overview',
-            xaxis: { title: 'Pass' },
-            yaxis: { title: 'Value' }
-        };
-        Plotly.newPlot('plot', [trace1], layout);
+        Plotly.newPlot('plot', [trace1], { title: "Allocation by Store" });
     </script>
+
 </body>
 </html>

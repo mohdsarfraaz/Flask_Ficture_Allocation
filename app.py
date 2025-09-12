@@ -7,7 +7,9 @@ from ficture_processing import ficture_allocation
 
 app = Flask(__name__)
 app.config['UPLOAD_FOLDER'] = 'uploads'
+app.config['RESULT_FOLDER'] = 'static/results'
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
+os.makedirs(app.config['RESULT_FOLDER'], exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls'}
 
@@ -23,7 +25,6 @@ def index():
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             file.save(filepath)
 
-            # Load data
             if filename.endswith('.csv'):
                 df = pd.read_csv(filepath)
             else:
@@ -38,12 +39,12 @@ def index():
 def process():
     filename = request.form['filename']
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+
     if filename.endswith('.csv'):
         df = pd.read_csv(filepath)
     else:
         df = pd.read_excel(filepath)
 
-    # Column mapping
     col_map = {
         'store': request.form['store_col'],
         'department': request.form['department_col'],
@@ -53,17 +54,16 @@ def process():
         'art': request.form['art_col']
     }
 
-    # Process data
     processed_df = ficture_allocation(df, col_map)
 
-    # Save result to CSV (for download)
-    result_path = os.path.join(app.config['UPLOAD_FOLDER'], f"processed_{filename}")
+    # Save result to static folder
+    result_filename = f"processed_{filename.replace(' ', '_')}"
+    result_path = os.path.join(app.config['RESULT_FOLDER'], result_filename)
     processed_df.to_csv(result_path, index=False)
 
-    # Convert to HTML table for preview
-    table_html = processed_df.head(100).to_html(classes='table table-striped', index=False)
+    table_html = processed_df.to_html(classes='table table-bordered table-striped', index=False)
 
-    return render_template('result.html', table=table_html, filename=filename)
+    return render_template('result.html', table=table_html, filename=filename, result_filename=result_filename)
 
 if __name__ == '__main__':
     app.run(debug=True)
