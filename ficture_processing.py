@@ -1,21 +1,60 @@
+"""Core allocation logic for the fixture allocation tool."""
 
-import pandas as pd
-import numpy as np
+from __future__ import annotations
+
 from datetime import datetime
-import time
+from typing import Callable, Dict
 
-def ficture_allocation(df, col_map, log_fn=print):
+import numpy as np
+import pandas as pd
+
+ProgressLogger = Callable[[str], None]
+
+
+def _normalise_series(series: pd.Series) -> pd.Series:
+    """Return a non-negative series that sums to 1.
+
+    The contribution column occasionally contains negative values or missing
+    data.  These values do not make sense for the allocation algorithm, so we
+    clamp them to zero and, if necessary, distribute the share evenly across
+    the remaining rows.
     """
-    Performs the fixture allocation process.
 
-    Args:
-        df (pd.DataFrame): The input DataFrame.
-        col_map (dict): A dictionary mapping generic column names to user-defined names.
-        log_fn (function): Optional logging function to report progress (default: print).
+    series = series.clip(lower=0)
+    total = series.sum()
 
-    Returns:
-        pd.DataFrame: The processed DataFrame with allocation columns.
+    if total == 0 or np.isclose(total, 0):
+        if len(series) == 0:
+            return series
+        return pd.Series(np.repeat(1 / len(series), len(series)), index=series.index)
+
+    return series / total
+
+
+def ficture_allocation(df: pd.DataFrame, col_map: Dict[str, str], log_fn: ProgressLogger = print) -> pd.DataFrame:
+    """Perform the multi-pass fixture allocation process.
+
+    The raw data contains the desired share of fixtures for each article as a
+    percentage.  Because fixtures are discrete objects, we calculate the
+    requirement using three passes:
+
+    1. The first pass allocates the floor of each article's desired share.
+    2. The second pass distributes any remainder based on the largest
+       fractional values (closest to the next full fixture).
+    3. The third pass distributes any remaining fixtures evenly based on the
+       weight of each article.
+
+    Parameters
+    ----------
+    df:
+        The uploaded dataset.
+    col_map:
+        Mapping of logical column names to the actual column titles supplied
+        by the user via the web form.
+    log_fn:
+        Optional logger (defaults to :func:`print`).
     """
+
     start_time = datetime.now()
 
     store_name = col_map['store']
@@ -23,37 +62,97 @@ def ficture_allocation(df, col_map, log_fn=print):
     udf = col_map['udf']
     mc_fic = col_map['mc_fic']
     cont_per = col_map['cont_per']
-    art = col_map['art']
 
-    df_1 = df.copy()
-    fict_bal_dict = {}
-    fict_req_dict = {}
+    df_processed = df.copy()
 
-    passes = 3
+    for allocation_pass in range(3):
+        df_processed[f"Allocate_{allocation_pass}"] = 0
+        df_processed[f"MC_BAl_{allocation_pass}"] = 0
+        df_processed[f"FIC_REQ_{allocation_pass}"] = 0.0
 
-    for i in range(passes):
-        df_1[f"Allocate_{i}"] = np.zeros(len(df_1))
-        df_1[f"MC_BAl_{i}"] = np.zeros(len(df_1))
-        df_1[f"FIC_REQ_{i}"] = np.zeros(len(df_1))
+    df_processed['rest_per'] = 0.0
+    df_processed['Final_Allocation'] = 0
 
-    df_1['rest_per'] = np.zeros(len(df_1))
+    df_processed[mc_fic] = pd.to_numeric(df_processed[mc_fic], errors='coerce').fillna(0)
+    df_processed[cont_per] = pd.to_numeric(df_processed[cont_per], errors='coerce').fillna(0)
 
-    for i in range(passes):
-        elapsed_time = datetime.now() - start_time
-        elapsed_time = str(elapsed_time).split('.')[0]
-        log_fn(f"Processing Pass {i+1} of {passes}... Elapsed Time: {elapsed_time}")
-        time.sleep(0.5)
+    if (df_processed[cont_per] > 1).any():
+        df_processed[cont_per] = df_processed[cont_per] / 100.0
 
-        grouped_data = df_1.groupby([store_name, department, udf])
+    group_cols = [store_name, department, udf]
+    grouped = df_processed.groupby(group_cols, dropna=False)
+    group_total = grouped.ngroups
+    progress = {'count': 0}
 
-        for (store, dep, disp), group in grouped_data:
-            mc_fic_val = group[mc_fic].iloc[0]
-            for idx in group.index:
-                cont_per_val = df_1.at[idx, cont_per]
-                fic_req = round(mc_fic_val * cont_per_val, 0)
-                df_1.at[idx, f"FIC_REQ_{i}"] = fic_req
-                df_1.at[idx, f"Allocate_{i}"] = fic_req
-                df_1.at[idx, f"MC_BAl_{i}"] = mc_fic_val - fic_req
-                mc_fic_val -= fic_req
+    def allocate_group(group: pd.DataFrame) -> pd.DataFrame:
+        progress['count'] += 1
+        if group_total:
+            elapsed = datetime.now() - start_time
+            elapsed_clean = str(elapsed).split('.')[0]
+            if progress['count'] == 1 or progress['count'] % 25 == 0 or progress['count'] == group_total:
+                log_fn(
+                    f"Processing group {progress['count']}/{group_total}... "
+                    f"Elapsed Time: {elapsed_clean}"
+                )
 
-    return df_1
+        group = group.copy()
+
+        total_fixtures = int(round(group[mc_fic].iloc[0]))
+        if total_fixtures <= 0 or len(group) == 0:
+            return group
+
+        contributions = _normalise_series(group[cont_per])
+        desired = contributions * total_fixtures
+
+        allocate_first = np.floor(desired).astype(int)
+        remainder = desired - allocate_first
+
+        fixtures_left = int(total_fixtures - allocate_first.sum())
+        allocate_second = np.zeros(len(group), dtype=int)
+        allocate_third = np.zeros(len(group), dtype=int)
+
+        if fixtures_left > 0:
+            order = np.argsort(-remainder.to_numpy())
+            for idx in order:
+                if fixtures_left <= 0:
+                    break
+                if remainder.iat[idx] <= 0:
+                    continue
+                allocate_second[idx] += 1
+                fixtures_left -= 1
+
+        if fixtures_left > 0:
+            order = np.argsort(-contributions.to_numpy())
+            if len(order) > 0:
+                idx = 0
+                while fixtures_left > 0:
+                    allocate_third[order[idx % len(order)]] += 1
+                    fixtures_left -= 1
+                    idx += 1
+
+        total_allocation = allocate_first + allocate_second + allocate_third
+
+        group[f"FIC_REQ_0"] = desired.round(2)
+        group[f"Allocate_0"] = allocate_first
+        group[f"MC_BAl_0"] = total_fixtures - allocate_first.sum()
+
+        group[f"FIC_REQ_1"] = remainder.round(2)
+        group[f"Allocate_1"] = allocate_second
+        group[f"MC_BAl_1"] = total_fixtures - (allocate_first + allocate_second).sum()
+
+        group[f"FIC_REQ_2"] = np.zeros(len(group))
+        group[f"Allocate_2"] = allocate_third
+        group[f"MC_BAl_2"] = total_fixtures - total_allocation.sum()
+
+        group['Final_Allocation'] = total_allocation
+        group['rest_per'] = (desired - total_allocation).round(4)
+
+        return group
+
+    processed = grouped.apply(allocate_group, group_keys=False)
+
+    elapsed_time = datetime.now() - start_time
+    elapsed_clean = str(elapsed_time).split('.')[0]
+    log_fn(f"Fixture allocation completed. Total time: {elapsed_clean}")
+
+    return processed
