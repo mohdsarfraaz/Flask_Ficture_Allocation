@@ -39,9 +39,7 @@
     </form>
 
     <div class="table-responsive">
-        <table id="dataTable" class="table table-bordered table-striped">
-            {{ table | safe }}
-        </table>
+        {{ table | safe }}
     </div>
 
     <hr>
@@ -50,62 +48,101 @@
 
     <script>
         // Dynamically populate filters from the table
-        const table = document.querySelector('#dataTable');
+        const table = document.getElementById('resultTable');
         const storeFilter = document.getElementById('storeFilter');
         const departmentFilter = document.getElementById('departmentFilter');
         const udfFilter = document.getElementById('udfFilter');
+        const columnMap = {{ column_map | tojson }};
 
-        const getColumnData = (colIndex) => {
-            const data = new Set();
-            for (let row of table.rows) {
-                if (row.rowIndex === 0) continue;
-                data.add(row.cells[colIndex].textContent.trim());
+        if (table) {
+            const headerCells = Array.from(table.tHead?.rows?.[0]?.cells || []).map(cell => cell.textContent.trim());
+            const dataRows = Array.from(table.tBodies?.[0]?.rows || []);
+
+            const normalise = (value) => value.toLowerCase().replace(/[^a-z0-9]+/g, '');
+            const headerLookup = headerCells.reduce((acc, text, index) => {
+                acc[normalise(text)] = index;
+                return acc;
+            }, {});
+
+            const resolveIndex = (key) => {
+                const target = normalise(columnMap[key] || key);
+                return headerLookup.hasOwnProperty(target) ? headerLookup[target] : -1;
+            };
+
+            const getColumnData = (columnIndex) => {
+                if (columnIndex === -1) {
+                    return [];
+                }
+                const values = new Set();
+                dataRows.forEach(row => {
+                    const cell = row.cells[columnIndex];
+                    if (!cell) return;
+                    values.add(cell.textContent.trim());
+                });
+                return Array.from(values).sort((a, b) => a.localeCompare(b));
+            };
+
+            const filterConfig = [
+                { element: storeFilter, key: 'store' },
+                { element: departmentFilter, key: 'department' },
+                { element: udfFilter, key: 'udf' }
+            ];
+
+            function populateFilters() {
+                filterConfig.forEach(({ element, key }) => {
+                    if (!element) return;
+                    const columnIndex = resolveIndex(key);
+                    const options = ['<option value="">All</option>'];
+                    getColumnData(columnIndex).forEach(value => {
+                        const escaped = value.replace(/"/g, '&quot;');
+                        options.push(`<option value="${escaped}">${value}</option>`);
+                    });
+                    element.innerHTML = options.join('');
+                    element.disabled = columnIndex === -1;
+                });
             }
-            return Array.from(data).sort();
-        };
 
-        function populateFilters() {
-            const headers = Array.from(table.rows[0].cells).map(cell => cell.textContent.trim());
-            const storeIndex = headers.indexOf("store") || headers.indexOf("Store") || 0;
-            const depIndex = headers.indexOf("department") || headers.indexOf("Department") || 1;
-            const udfIndex = headers.indexOf("udf") || headers.indexOf("UDF") || 2;
+            function applyFilters() {
+                const columnIndexes = {
+                    store: resolveIndex('store'),
+                    department: resolveIndex('department'),
+                    udf: resolveIndex('udf')
+                };
 
-            getColumnData(storeIndex).forEach(v => storeFilter.innerHTML += `<option>${v}</option>`);
-            getColumnData(depIndex).forEach(v => departmentFilter.innerHTML += `<option>${v}</option>`);
-            getColumnData(udfIndex).forEach(v => udfFilter.innerHTML += `<option>${v}</option>`);
+                dataRows.forEach(row => {
+                    const matches = (
+                        (columnIndexes.store === -1 || !storeFilter.value || row.cells[columnIndexes.store]?.textContent.trim() === storeFilter.value) &&
+                        (columnIndexes.department === -1 || !departmentFilter.value || row.cells[columnIndexes.department]?.textContent.trim() === departmentFilter.value) &&
+                        (columnIndexes.udf === -1 || !udfFilter.value || row.cells[columnIndexes.udf]?.textContent.trim() === udfFilter.value)
+                    );
+                    row.style.display = matches ? '' : 'none';
+                });
+            }
+
+            filterConfig.forEach(({ element }) => {
+                if (!element) return;
+                element.addEventListener('change', applyFilters);
+            });
+
+            populateFilters();
         }
 
-        function applyFilters() {
-            const sVal = storeFilter.value;
-            const dVal = departmentFilter.value;
-            const uVal = udfFilter.value;
-
-            for (let row of table.rows) {
-                if (row.rowIndex === 0) continue;
-                const s = row.cells[0].textContent.trim();
-                const d = row.cells[1].textContent.trim();
-                const u = row.cells[2].textContent.trim();
-                row.style.display = (
-                    (!sVal || s === sVal) &&
-                    (!dVal || d === dVal) &&
-                    (!uVal || u === uVal)
-                ) ? '' : 'none';
-            }
+        const plotData = {{ plot_data | tojson }};
+        if (plotData && plotData.store && plotData.store.length) {
+            const trace = {
+                x: plotData.store,
+                y: plotData.allocation,
+                type: 'bar',
+                marker: { color: '#0d6efd' }
+            };
+            Plotly.newPlot('plot', [trace], {
+                title: 'Allocation by Store',
+                xaxis: { title: columnMap.store },
+                yaxis: { title: 'Final Allocation' }
+            });
+        } else {
+            document.getElementById('plot').innerHTML = '<p class="text-muted">No allocation data available for plotting.</p>';
         }
-
-        [storeFilter, departmentFilter, udfFilter].forEach(el => {
-            el.addEventListener('change', applyFilters);
-        });
-
-        populateFilters();
-
-        // Plotly example (placeholder)
-        const trace1 = {
-            x: ['Store A', 'Store B', 'Store C'],
-            y: [120, 80, 50],
-            type: 'bar'
-        };
-        Plotly.newPlot('plot', [trace1], { title: "Allocation by Store" });
     </script>
 
 </body>
